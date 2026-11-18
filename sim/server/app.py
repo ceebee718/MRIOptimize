@@ -64,7 +64,7 @@ def _check_key(k):
 def health():
     koma = None
     try:
-        r = httpx.get(KOMA_URL + "/health", timeout=3)
+        r = httpx.get(KOMA_URL + "/health", timeout=15)
         koma = r.json()
         if "regions" in koma:  # something other than the KomaMRI worker answered on that port
             koma = {"ok": False, "error": f"{KOMA_URL} is answered by another service, not the KomaMRI worker"}
