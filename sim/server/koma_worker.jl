@@ -12,7 +12,7 @@ const GPU = try
 catch
     false
 end
-println("KomaMRI worker starting. GPU available: ", GPU)
+println("KomaMRI worker starting. GPU available: ", GPU); flush(stdout)
 
 function load_phantom(path)
     raw = reinterpret(Float32, read(path))
@@ -26,8 +26,7 @@ end
 function run_sim(seq_path, phantom_path, out_path, b0)
     obj = load_phantom(phantom_path)
     seq = read_seq(seq_path)
-    sys = Scanner()
-    sys.B0 = b0
+    sys = Scanner()   # field strength is not needed: fat off-resonance is set per spin (Δw)
     sim_params = Dict{String,Any}("return_type" => "mat", "gpu" => GPU)
     sig = simulate(obj, seq, sys; sim_params = sim_params)
     s = ComplexF32.(vec(sig))
@@ -57,14 +56,14 @@ end
 warm = get(ENV, "PROAQMR_WARMUP", "")
 if !isempty(warm) && isfile(warm * ".seq")
     try
-        println("Warming up KomaMRI (first compile can take a few minutes)...")
+        println("Warming up KomaMRI (first compile can take a few minutes)..."); flush(stdout)
         run_sim(warm * ".seq", warm * ".phantom", warm * ".out", 1.5)
-        println("Warm-up done.")
+        println("Warm-up done."); flush(stdout)
     catch e
         @warn "warm-up failed" exception = e
     end
 end
 
 const PORT = parse(Int, get(ENV, "KOMA_PORT", "8011"))
-println("KomaMRI worker listening on 127.0.0.1:", PORT)
+println("KomaMRI worker listening on 127.0.0.1:", PORT); flush(stdout)
 HTTP.serve(handle, "127.0.0.1", PORT)
