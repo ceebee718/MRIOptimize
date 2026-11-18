@@ -10,10 +10,16 @@ for engine in ("fast", "koma"):
     t = time.time()
     r = httpx.post(BASE + "/jobs", json=dict(current=p, optimized=dict(p, ETL=16), region="abdomen", engine=engine, key=KEY), timeout=30)
     jid = r.json().get("id")
+    if not jid:
+        print(f"{engine}: FAILED to submit - {r.status_code} {r.text[:300]}")
+        continue
     while True:
         time.sleep(2)
         j = httpx.get(f"{BASE}/jobs/{jid}", timeout=30).json()
-        if j["status"] in ("done", "error"):
+        if j.get("status") in ("done", "error"):
+            break
+        if "status" not in j:
+            j = {"status": "error", "error": f"unexpected reply: {str(j)[:300]}"}
             break
     if j["status"] == "done":
         m = j["result"]["metrics"]

@@ -1,5 +1,5 @@
 # KomaMRI worker for PROAQMR.
-# Listens on 127.0.0.1:8001 (internal only). The Python API sends it a Pulseq
+# Listens on 127.0.0.1:$KOMA_PORT (default 8011, internal only; RunPod uses 8001 for its own proxy). The Python API sends it a Pulseq
 # file and a phantom file; it runs the Bloch simulation and writes the raw
 # signal (Float32 real/imag interleaved, ADC samples in playback order).
 using KomaMRIBase, KomaMRICore, KomaMRIFiles
@@ -65,4 +65,6 @@ if !isempty(warm) && isfile(warm * ".seq")
     end
 end
 
-HTTP.serve(handle, "127.0.0.1", 8001)
+const PORT = parse(Int, get(ENV, "KOMA_PORT", "8011"))
+println("KomaMRI worker listening on 127.0.0.1:", PORT)
+HTTP.serve(handle, "127.0.0.1", PORT)
