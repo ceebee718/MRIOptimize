@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the KomaMRI worker (port 8001, internal) and the API (port 8000, exposed).
+# Start the KomaMRI worker (port 8011, internal) and the API (port 8000, exposed).
 # Optional: export PROAQMR_API_KEY=some-secret   (the page must send the same key)
 #           export ALLOWED_ORIGINS=https://your-site.netlify.app
 set -uo pipefail
@@ -9,6 +9,10 @@ export PATH="$WS/julia/bin:$PATH"
 export JULIA_DEPOT_PATH="$WS/.julia"
 export PROAQMR_WORK="$WS/proaqmr_tmp"; mkdir -p "$PROAQMR_WORK"
 export PROAQMR_WARMUP="$PROAQMR_WORK/warm"
+export KOMA_PORT=${KOMA_PORT:-8011}   # RunPod's own proxy uses 8001 inside the pod
+
+# stop any worker left from an earlier start
+pkill -f "server/koma_worker.jl" 2>/dev/null || true
 
 if command -v julia >/dev/null 2>&1; then
   python3 -m server.warmup "$PROAQMR_WARMUP" || echo "warm-up files not written"

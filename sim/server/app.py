@@ -2,7 +2,7 @@
 
 POST /simulate compares a current and an optimized protocol on a body phantom.
 engine="fast" uses the k-space/EPG model (seconds, CPU). engine="koma" runs
-the full Bloch simulation in KomaMRI (needs the Julia worker on port 8001).
+the full Bloch simulation in KomaMRI (needs the Julia worker on port 8011).
 """
 import base64, io, os, tempfile, threading, time, uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -16,7 +16,7 @@ from PIL import Image
 from . import phantoms as ph
 from . import fastsim as fs
 
-KOMA_URL = os.environ.get("KOMA_URL", "http://127.0.0.1:8001")
+KOMA_URL = os.environ.get("KOMA_URL", "http://127.0.0.1:" + os.environ.get("KOMA_PORT", "8011"))
 WORK = os.environ.get("PROAQMR_WORK", tempfile.gettempdir())
 ALLOWED = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",")]
 API_KEY = os.environ.get("PROAQMR_API_KEY", "")
@@ -66,8 +66,10 @@ def health():
     try:
         r = httpx.get(KOMA_URL + "/health", timeout=3)
         koma = r.json()
+        if "regions" in koma:  # something other than the KomaMRI worker answered on that port
+            koma = {"ok": False, "error": f"{KOMA_URL} is answered by another service, not the KomaMRI worker"}
     except Exception:
-        koma = {"ok": False}
+        koma = {"ok": False, "error": "KomaMRI worker not running yet (it may still be compiling; see koma.log)"}
     return {"ok": True, "koma": koma, "regions": {k: v["label"] for k, v in ph.REGIONS.items()}}
 
 
@@ -117,11 +119,17 @@ def _koma_image(p, region, fatsat, fast_noiseless):
     seq.write(tag + ".seq")
     write_phantom(tag + ".phantom", region, p, fatsat)
     t0 = time.time()
-    r = httpx.post(KOMA_URL + "/simulate", json={"seq": tag + ".seq", "phantom": tag + ".phantom",
-                                                 "out": tag + ".out", "b0": p["b0"]}, timeout=1800)
-    js = r.json()
+    try:
+        r = httpx.post(KOMA_URL + "/simulate", json={"seq": tag + ".seq", "phantom": tag + ".phantom",
+                                                     "out": tag + ".out", "b0": p["b0"]}, timeout=1800)
+    except httpx.ConnectError:
+        raise HTTPException(503, "KomaMRI worker is not running yet (it may still be compiling; check koma.log).")
+    try:
+        js = r.json()
+    except ValueError:
+        js = {}
     if not js.get("ok"):
-        raise HTTPException(500, "KomaMRI error: " + str(js.get("error")))
+        raise HTTPException(500, f"KomaMRI error (HTTP {r.status_code}): " + str(js.get("error") or js.get("detail") or r.text[:300]))
     raw = np.fromfile(tag + ".out", dtype=np.float32)
     sig = raw[0::2] + 1j * raw[1::2]
     img = reorder_recon(sig, adc_lines, int(p["Np"]), int(p["Nr"]))
