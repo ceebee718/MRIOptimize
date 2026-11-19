@@ -11,8 +11,10 @@ export PROAQMR_WORK="$WS/proaqmr_tmp"; mkdir -p "$PROAQMR_WORK"
 export PROAQMR_WARMUP="$PROAQMR_WORK/warm"
 export KOMA_PORT=${KOMA_PORT:-8011}   # RunPod's own proxy uses 8001 inside the pod
 
-# stop any worker left from an earlier start
+# stop any worker or API left from an earlier start (patterns match only this server)
 pkill -f "server/koma_worker.jl" 2>/dev/null || true
+pkill -f "uvicorn server.app:app" 2>/dev/null || true
+sleep 1
 
 if command -v julia >/dev/null 2>&1; then
   python3 -m server.warmup "$PROAQMR_WARMUP" || echo "warm-up files not written"
