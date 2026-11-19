@@ -61,6 +61,14 @@ It runs one small comparison on each engine and prints `OK` or the error. If `ko
 
 The result has three PNG images (current, optimized, difference, all on the same physical scale and window) and metrics for each protocol: ROI SNR, effective phase-direction resolution from the echo-train point-spread function, chemical shift, echo spacing and actual TE.
 
+## Image quality vs speed (KomaMRI)
+
+Spins are spread randomly through the slice so crusher gradients work; the leftover from unwanted echo pathways shows as fine grain that shrinks with more spins per pixel. `PROAQMR_ZREPS` (default 10) sets the number of spin positions through the slice. Raise it for smoother images, lower it for speed:
+
+```bash
+export PROAQMR_ZREPS=20   # before bash start.sh
+```
+
 ## Limits
 
 - One 2D slice; no slice profile, flow, motion, inversion recovery or vendor deep-learning reconstruction.
