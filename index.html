@@ -202,10 +202,10 @@ details summary{cursor:pointer;color:var(--ink);font-weight:500}
         <label class="f" for="sarMax"><span>SAR limit, <span id="sarUnit">W/kg</span></span><input id="sarMax" type="number" step="0.1"></label>
         <label class="f" for="resLoss">Max resolution loss, % per direction<input id="resLoss" type="number" step="1" min="0"></label>
         <label class="f" for="csMax">Max chemical shift, px<input id="csMax" type="number" step="0.1"></label>
-        <label class="f" for="blurMax">Max echo-train blurring, % of current<input id="blurMax" type="number" step="5"></label>
+        <label class="f" for="blurMax">Max effective phase resolution, % of current<input id="blurMax" type="number" step="5"></label>
         <label class="f" for="gk">g-factor k, g = 1 + k(R−1)²<input id="gk" type="number" step="0.01" min="0"></label>
       </div>
-      <p class="hint">Blurring is measured as echo-train duration ÷ tissue T2 (fast spin echo only). Normal-mode whole-body SAR is 2.0 W/kg (IEC 60601-2-33). Without a console SAR value, the SAR limit is a percentage of the current protocol. Editing any limit switches the strategy to Custom.</p>
+      <p class="hint">Effective phase resolution is the width of the point-spread function after echo-train T2 decay (extended phase graph of the echo train, fast spin echo only), the same calculation the image simulator uses. Normal-mode whole-body SAR is 2.0 W/kg (IEC 60601-2-33). Without a console SAR value, the SAR limit is a percentage of the current protocol. Editing any limit switches the strategy to Custom.</p>
     </details>
   </section>
 </div>
@@ -320,7 +320,7 @@ details summary{cursor:pointer;color:var(--ink);font-weight:500}
 <div class="col">
   <section class="panel">
     <h2>Model</h2>
-    <p class="hint" style="margin-top:0">SNR ∝ B0 · voxel volume · √(phase lines · partitions · averages ÷ bandwidth per pixel) ÷ (g√R) · tissue signal. Spin-echo signal uses (1 − e^(−TR/T1)) · e^(−TE/T2); spoiled GRE uses the Ernst equation with T2*. Scan time = TR × shots × averages × concatenations. SAR scales with B0² × Σ(flip angle²) per second. Blurring = echo-train duration ÷ T2. Echo spacing, minimum TE and slice timing are estimated from bandwidth and calibrated so the current protocol is valid. Deep-learning reconstruction is not modeled. Confirm time and SAR on the console, verify SNR and uniformity on the ACR phantom, and have a radiologist review contrast before clinical use.</p>
+    <p class="hint" style="margin-top:0">SNR ∝ B0 · voxel volume · √(phase lines · partitions · averages ÷ bandwidth per pixel) ÷ (g√R) · tissue signal. Spin-echo signal uses (1 − e^(−TR/T1)) · e^(−TE/T2); spoiled GRE uses the Ernst equation with T2*. Scan time = TR × shots × averages × concatenations. SAR scales with B0² × Σ(flip angle²) per second. Effective phase resolution = FWHM of the point-spread function from the echo-train weighting of k-space (extended phase graph). Echo spacing, minimum TE and slice timing are estimated from bandwidth and calibrated so the current protocol is valid. Deep-learning reconstruction is not modeled. Confirm time and SAR on the console, verify SNR and uniformity on the ACR phantom, and have a radiologist review contrast before clinical use.</p>
   </section>
 </div>
 </main>
@@ -429,15 +429,67 @@ function model(p, f, cal){
   const px = Math.max(p.fovR/p.Nr, p.fovP/p.Np);
   const cs = CS_HZ_PER_T*f.b0/p.BW;
   const etd = tse ? etl*esp : 0;
-  const blur = tse ? etd/f.T2 : 0;
-  return {time, snr, sar, vox, px, pxR:p.fovR/p.Nr, pxP:p.fovP/p.Np, cs, nz, concat, esp, teMin, tslice, etd, blur, reasons};
+  const effPx = tse ? tseEffPx(p, f) : 1.207;
+  const effP = effPx*p.fovP/p.Np;   // effective phase-direction resolution, mm (FWHM of the point-spread function)
+  return {time, snr, sar, vox, px, pxR:p.fovR/p.Nr, pxP:p.fovP/p.Np, cs, nz, concat, esp, teMin, tslice, etd, effPx, effP, reasons};
+}
+// ---- Effective phase resolution: echo-train weighting -> point-spread function (same method as the simulator)
+const _epgCache=new Map();
+function epgCPMG(alphaDeg, etl, esp, t1, t2){
+  const key=alphaDeg+"|"+etl+"|"+esp.toFixed(3)+"|"+t1+"|"+t2;
+  const hit=_epgCache.get(key); if(hit) return hit;
+  const n=2*etl+4;
+  const pr=new Float64Array(n), pi=new Float64Array(n), mr=new Float64Array(n), mi=new Float64Array(n), zr=new Float64Array(n), zi=new Float64Array(n);
+  // 90 degree excitation (phase 0) of Z0 = 1: F+0 = -i, F-0 = +i
+  pi[0]=-1; mi[0]=1;
+  const a=alphaDeg*Math.PI/180, c2=Math.cos(a/2)**2, s2=Math.sin(a/2)**2, sa=Math.sin(a), ca=Math.cos(a);
+  // refocusing about y (CPMG, phi = 90 deg): T = [[c2, -s2, sa],[-s2, c2, sa],[-sa/2, -sa/2, ca]] (all real)
+  const e1=Math.exp(-esp/2/t1), e2=Math.exp(-esp/2/t2);
+  const relax=()=>{ for(let k=0;k<n;k++){ pr[k]*=e2; pi[k]*=e2; mr[k]*=e2; mi[k]*=e2; zr[k]*=e1; zi[k]*=e1; } zr[0]+=1-e1; };
+  const grad=()=>{ for(let k=n-1;k>0;k--){ pr[k]=pr[k-1]; pi[k]=pi[k-1]; } for(let k=0;k<n-1;k++){ mr[k]=mr[k+1]; mi[k]=mi[k+1]; } mr[n-1]=0; mi[n-1]=0; pr[0]=mr[0]; pi[0]=-mi[0]; };
+  const rf=()=>{ for(let k=0;k<n;k++){ const P=pr[k],Pi=pi[k],M=mr[k],Mi=mi[k],Zr=zr[k],Zi=zi[k];
+      pr[k]=c2*P - s2*M + sa*Zr;  pi[k]=c2*Pi - s2*Mi + sa*Zi;
+      mr[k]=-s2*P + c2*M + sa*Zr; mi[k]=-s2*Pi + c2*Mi + sa*Zi;
+      zr[k]=-0.5*sa*(P+M) + ca*Zr; zi[k]=-0.5*sa*(Pi+Mi) + ca*Zi; } };
+  const out=new Float64Array(etl);
+  for(let i=0;i<etl;i++){ relax(); grad(); rf(); relax(); grad(); out[i]=Math.hypot(pr[0],pi[0]); }
+  if(_epgCache.size>5000) _epgCache.clear();
+  _epgCache.set(key,out);
+  return out;
+}
+const _psfCache=new Map();
+function tseEffPx(p, f){
+  // echo spacing and centre echo exactly as the simulation server computes them
+  const etl=Math.max(1,Math.round(p.ETL)), npl=Math.round(p.Np), esp=1000/p.BW+4;
+  const ete=Math.min(etl-1, Math.max(0, Math.round(p.TE/esp)-1));
+  const key=etl+"|"+esp.toFixed(3)+"|"+ete+"|"+p.refoc+"|"+npl+"|"+f.T1+"|"+f.T2;
+  const hit=_psfCache.get(key); if(hit!==undefined) return hit;
+  const echoes=epgCPMG(p.refoc, etl, esp, f.T1, f.T2);
+  const nshots=Math.ceil(npl/etl), jc=Math.floor(Math.floor(npl/2)/nshots);
+  // k-space is etl contiguous segments of nshots lines; segment j is acquired on echo (j - jc + ete) mod etl
+  const segA=[], segN=[], segW=[];
+  for(let j=0;j<etl;j++){ const a0=j*nshots, nn=Math.min(nshots, npl-a0); if(nn<=0) break; segA.push(a0-npl/2); segN.push(nn); segW.push(echoes[(((j-jc+ete)%etl)+etl)%etl]); }
+  let w0=0; for(let j=0;j<segN.length;j++) w0+=segW[j]*segN[j];
+  // PSF(x) = |sum_j w_j * sum_{l=a_j}^{a_j+n_j-1} exp(i*th*l)|, th = 2*pi*x/npl, geometric sums in closed form
+  const psf=(x)=>{ const th=2*Math.PI*x/npl; if(th===0) return 1; let re=0, im=0; const dh=Math.sin(th/2);
+    for(let j=0;j<segN.length;j++){ const nn=segN[j], mid=segA[j]+(nn-1)/2, amp=Math.sin(nn*th/2)/dh*segW[j];
+      re+=amp*Math.cos(mid*th); im+=amp*Math.sin(mid*th); }
+    return Math.hypot(re,im)/w0; };
+  // coarse search for the half-maximum, then bisection
+  let lo=0, hi=0, step=0.25, found=false;
+  for(let x=step; x<=40; x+=step){ if(psf(x)<0.5){ lo=x-step; hi=x; found=true; break; } }
+  let fw=1.207;
+  if(found){ for(let i=0;i<10;i++){ const m=(lo+hi)/2; if(psf(m)<0.5) hi=m; else lo=m; } fw=lo+hi; }
+  if(_psfCache.size>50000) _psfCache.clear();
+  _psfCache.set(key, fw);
+  return fw;
 }
 function evaluate(p, f, cal, base, lim){
   const m = model(p, f, cal);
   const time = m.time*f.kT;
   const snrPct = m.snr/base.snr*100;
   const sar = f.kS ? m.sar*f.kS : m.sar/base.sar*100;
-  const blurPct = base.blur>0 ? m.blur/base.blur*100 : 100;
+  const effPct = m.effP/base.effP*100;
   const fails = m.reasons.slice();
   if(snrPct < lim.snrMin - 1e-9) fails.push("SNR below floor");
   if(time > lim.timeMax + 1e-9) fails.push("scan time above ceiling");
@@ -445,8 +497,8 @@ function evaluate(p, f, cal, base, lim){
   const rl=1+(lim.resLoss||0)/100;
   if(m.pxR > base.pxR*rl + 1e-9 || m.pxP > base.pxP*rl + 1e-9) fails.push("resolution loss above limit");
   if(m.cs > lim.csMax + 1e-9) fails.push("chemical shift above limit");
-  if(base.blur>0 && blurPct > lim.blurMax + 1e-9) fails.push("echo-train blurring above limit");
-  return {p, m, time, snrPct, sar, blurPct, ok:fails.length===0, fails};
+  if(isTSE(f.seq) && effPct > lim.blurMax + 1e-9) fails.push("effective resolution (echo-train blur) above limit");
+  return {p, m, time, snrPct, sar, effPct, ok:fails.length===0, fails};
 }
 function score(e, mode){
   if(mode==="fast") return -e.time + 1e-4*e.snrPct;
@@ -458,7 +510,7 @@ function optimize(p0, f, bounds, lim, modes, rng){
   modes = Array.isArray(modes) ? modes : [modes];
   const cal = calibrate(p0, f);
   const baseRaw = model(p0, f, cal);
-  const base = {snr:baseRaw.snr, sar:baseRaw.sar, blur:baseRaw.blur, pxR:baseRaw.pxR, pxP:baseRaw.pxP};
+  const base = {snr:baseRaw.snr, sar:baseRaw.sar, effP:baseRaw.effP, pxR:baseRaw.pxR, pxP:baseRaw.pxP};
   const free = PARAMS.filter(q => applies(q, f.seq) && bounds[q.k] && bounds[q.k].free).map(q => q.k);
   const ev = p => evaluate(p, f, cal, base, lim);
   const current = ev(p0);
@@ -514,9 +566,9 @@ function isolatedEffects(p0, pBest, f, cal, keys){
 }
 // Strategy presets
 const STRATEGIES = {
-  conservative:{snrMin:100, blurMax:110, resLoss:0, lockContrast:true, capR:true},
-  balanced:{snrMin:95, blurMax:125, resLoss:5, lockContrast:false, capR:false},
-  aggressive:{snrMin:85, blurMax:150, resLoss:15, lockContrast:false, capR:false}
+  conservative:{snrMin:100, blurMax:105, resLoss:0, lockContrast:true, capR:true},
+  balanced:{snrMin:95, blurMax:115, resLoss:5, lockContrast:false, capR:false},
+  aggressive:{snrMin:85, blurMax:135, resLoss:15, lockContrast:false, capR:false}
 };
 function defaultBounds(p, seq){
   const r = (k,lo,hi)=>{ const st=stepOf(k,seq); return [snap(lo,st,-1e9,1e9), snap(hi,st,-1e9,1e9)]; };
@@ -633,7 +685,7 @@ function writeBounds(b){ PARAMS.forEach(q=>{ $("free_"+q.k).checked=b[q.k].free;
 function writeLim(l){ ["snrMin","timeMax","sarMax","resLoss","csMax","blurMax"].forEach(k=>$(k).value=l[k]); }
 function limitsSummary(){
   const l=readLim();
-  $("limitsSummary").textContent=` · SNR ≥ ${l.snrMin}% · time ≤ ${fmtTime(l.timeMax)} · SAR ≤ ${l.sarMax}${$("sarUnit").textContent==="W/kg"?" W/kg":"%"} · resolution loss ≤ ${l.resLoss}% · blurring ≤ ${$("blurMax").value}%`;
+  $("limitsSummary").textContent=` · SNR ≥ ${l.snrMin}% · time ≤ ${fmtTime(l.timeMax)} · SAR ≤ ${l.sarMax}${$("sarUnit").textContent==="W/kg"?" W/kg":"%"} · resolution loss ≤ ${l.resLoss}% · effective resolution ≤ ${$("blurMax").value}%`;
 }
 function updateRows(){
   const seq=$("seq").value;
@@ -700,7 +752,7 @@ function refresh(){
     tile("SAR", f.cSAR? fmt(f.cSAR,2)+" W/kg":"100%", f.cSAR?"from console":"reference") +
     tile("Voxel", fmt(m.vox,2)+" mm³", fmt(p.fovR/p.Nr,2)+" × "+fmt(p.fovP/p.Np,2)+" × "+fmt(p.thk,1)) +
     tile("Chemical shift", fmt(m.cs,2)+" px", "fat–water") +
-    (isTSE(f.seq)? tile("Echo train", fmt(m.etd,0)+" ms", "= "+fmt(m.blur,2)+" × T2") : tile(is3D(f.seq)?"Partitions":"Slices / concats", is3D(f.seq)? String(m.nz) : m.nz+" / "+m.concat, "coverage "+fmt(f.coverage,0)+" mm"));
+    (isTSE(f.seq)? tile("Effective phase res.", fmt(m.effP,2)+" mm", "nominal "+fmt(p.fovP/p.Np,2)+" mm · echo train "+fmt(m.etd,0)+" ms") : tile(is3D(f.seq)?"Partitions":"Slices / concats", is3D(f.seq)? String(m.nz) : m.nz+" / "+m.concat, "coverage "+fmt(f.coverage,0)+" mm"));
   $("why").innerHTML="";
   $("notes").innerHTML = m.reasons.map(r=>`<li class="warn">Model check: ${esc(r)}.</li>`).join("") + presetNotes.map(t=>`<li>${esc(t)}</li>`).join("");
   drawPlot(null);
@@ -777,7 +829,7 @@ function render(){
     tile("SAR", sarFmt(b.sar), `${sarFmt(c.sar)} now · limit ${sarFmt(lim.sarMax)}`, b.sar<=c.sar+1e-9?"good":"warn") +
     tile("Voxel", fmt(b.m.vox,2)+" mm³", `${fmt(b.p.fovR/b.p.Nr,2)} × ${fmt(b.p.fovP/b.p.Np,2)} × ${fmt(b.p.thk,1)}`) +
     tile("Chemical shift", fmt(b.m.cs,2)+" px", `${fmt(c.m.cs,2)} px now`, b.m.cs>c.m.cs*1.2?"warn":"") +
-    (isTSE(seq) ? tile("Blurring", fmt(b.blurPct,0)+"%", `echo train ${fmt(b.m.etd,0)} ms · limit ${fmt(lim.blurMax,0)}%`, b.blurPct>110?"warn":"")
+    (isTSE(seq) ? tile("Effective phase res.", fmt(b.m.effP,2)+" mm", `${fmt(c.m.effP,2)} mm now · ${sgn(b.effPct-100,0)}% · limit ${fmt(lim.blurMax,0)}%`, b.effPct>110?"warn":"")
                 : tile(is3D(seq)?"Partitions":"Slices / concats", is3D(seq)? String(b.m.nz) : b.m.nz+" / "+b.m.concat, "coverage "+fmt(f.coverage,0)+" mm"));
   // why each change
   const eff = isolatedEffects(p0, b.p, f, res.cal, changedKeys);
@@ -819,7 +871,7 @@ function buildSheet(res, b, mode, eff){
   L.push(`Predicted SNR       : 100% -> ${fmt(b.snrPct,0)}%`);
   L.push(`Predicted SAR       : ${sarFmt(c.sar)} -> ${sarFmt(b.sar)}`);
   L.push(`Chemical shift      : ${fmt(c.m.cs,2)} -> ${fmt(b.m.cs,2)} px`);
-  if(isTSE(seq)) L.push(`Echo-train blurring : 100% -> ${fmt(b.blurPct,0)}%`);
+  if(isTSE(seq)) L.push(`Effective phase res.: ${fmt(c.m.effP,2)} -> ${fmt(b.m.effP,2)} mm (${sgn(b.effPct-100,0)}%)`);
   if(eff.length){ L.push(""); L.push("Rationale:"); eff.forEach(e=>{ const q=PARAMS.find(x=>x.k===e.k); L.push(`- ${q.label}: ${WHY[e.k](p0[e.k],b.p[e.k])}`); }); }
   L.push("");
   L.push("Verification before clinical use:");
@@ -935,7 +987,7 @@ function restoreState(st){
   ["strategy","pname","site","seq","b0","tissue","T1","T2","T2s","slices","gap","cTime","cSAR","mode","snrMin","timeMax","sarMax","resLoss","csMax","blurMax","gk"].forEach(k=>{ if(st[k]!==undefined && $(k)) $(k).value=st[k]; });
   presetNotes = st.presetNotes || [];
   PARAMS.forEach(q=>{ const v=st.params&&st.params[q.k]; if(v){ $("cur_"+q.k).value=v.cur; $("free_"+q.k).checked=v.free; $("min_"+q.k).value=v.min; $("max_"+q.k).value=v.max; } });
-  if(!$("blurMax").value) $("blurMax").value=125;
+  if(!$("blurMax").value || +$("blurMax").value===125) $("blurMax").value=115;
   if(!$("resLoss").value) $("resLoss").value=5;
   clearResult(); updateRows(); refresh();
 }
