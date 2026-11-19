@@ -161,14 +161,16 @@ def align_to(img, ref):
     return best
 
 
-def write_phantom(path, region, p, fatsat, z_reps=3, seed=11):
+def write_phantom(path, region, p, fatsat, z_reps=None, seed=11):
     """Spins (metres, seconds, rad/s) as Float32: n, x, y, z, rho, T1, T2, T2*, dw.
 
     Spins are jittered in-plane and spread randomly through the slice thickness
-    (z_reps copies per in-plane cell). Crusher and spoiler gradients only remove
+    (z_reps copies per in-plane cell; default 10, set PROAQMR_ZREPS). Crusher and spoiler gradients only remove
     unwanted echo pathways if spins are distributed across the slice; with all
     spins at z = 0 those pathways survive and show up as stripes.
     """
+    if z_reps is None:
+        z_reps = int(os.environ.get("PROAQMR_ZREPS", "10"))  # more = smoother, slower
     rng = np.random.default_rng(seed)
     ex, ey = ph.REGIONS[region]["extent"]
     pix = min(p["fovR"] / p["Nr"], p["fovP"] / p["Np"])

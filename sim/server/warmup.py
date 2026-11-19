@@ -8,7 +8,7 @@ def make(tag):
              Nr=64, Np=64, thk=6, NEX=1, BW=300, R=1)
     seq, _, _ = build(p)
     seq.write(tag + ".seq")
-    write_phantom(tag + ".phantom", "abdomen", dict(p, Nr=48, Np=48), False)
+    write_phantom(tag + ".phantom", "abdomen", dict(p, Nr=48, Np=48), False, z_reps=2)
 
 if __name__ == "__main__":
     make(sys.argv[1])
