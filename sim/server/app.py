@@ -161,8 +161,15 @@ def align_to(img, ref):
     return best
 
 
-def write_phantom(path, region, p, fatsat):
-    """Spins on a regular grid (metres, seconds, rad/s) as Float32: n, x, y, rho, T1, T2, T2*, dw."""
+def write_phantom(path, region, p, fatsat, z_reps=3, seed=11):
+    """Spins (metres, seconds, rad/s) as Float32: n, x, y, z, rho, T1, T2, T2*, dw.
+
+    Spins are jittered in-plane and spread randomly through the slice thickness
+    (z_reps copies per in-plane cell). Crusher and spoiler gradients only remove
+    unwanted echo pathways if spins are distributed across the slice; with all
+    spins at z = 0 those pathways survive and show up as stripes.
+    """
+    rng = np.random.default_rng(seed)
     ex, ey = ph.REGIONS[region]["extent"]
     pix = min(p["fovR"] / p["Nr"], p["fovP"] / p["Np"])
     step = max(pix / 2.0, 0.6)
@@ -171,7 +178,8 @@ def write_phantom(path, region, p, fatsat):
     xs = (np.arange(nx) - nx / 2 + 0.5) * step
     ys = (np.arange(ny) - ny / 2 + 0.5) * step
     X, Y = np.meshgrid(xs, ys)
-    cols = {k: [] for k in ("x", "y", "rho", "t1", "t2", "t2s", "dw")}
+    thk = p["thk"]
+    cols = {k: [] for k in ("x", "y", "z", "rho", "t1", "t2", "t2s", "dw")}
     dw_fat = -2 * np.pi * fs.FAT_PPM_HZ_PER_T * p["b0"]
     for tid in np.unique(lab):
         name = ph.TISSUE_NAMES[tid]
@@ -179,14 +187,18 @@ def write_phantom(path, region, p, fatsat):
         if pd == 0:
             continue
         m = lab == tid
-        n = int(m.sum())
         if name in ph.FAT_LIKE and fatsat:
             pd *= 0.08
-        cols["x"].append(X[m] * 1e-3); cols["y"].append(Y[m] * 1e-3)
-        cols["rho"].append(np.full(n, pd)); cols["t1"].append(np.full(n, t1 * 1e-3))
+        bx, by = X[m], Y[m]
+        n = bx.size * z_reps
+        x = np.repeat(bx, z_reps) + rng.uniform(-step / 2, step / 2, n)
+        y = np.repeat(by, z_reps) + rng.uniform(-step / 2, step / 2, n)
+        z = rng.uniform(-thk / 2, thk / 2, n)
+        cols["x"].append(x * 1e-3); cols["y"].append(y * 1e-3); cols["z"].append(z * 1e-3)
+        cols["rho"].append(np.full(n, pd / z_reps)); cols["t1"].append(np.full(n, t1 * 1e-3))
         cols["t2"].append(np.full(n, t2 * 1e-3)); cols["t2s"].append(np.full(n, t2s * 1e-3))
         cols["dw"].append(np.full(n, dw_fat if name in ph.FAT_LIKE else 0.0))
-    arrs = [np.concatenate(cols[k]).astype(np.float32) for k in ("x", "y", "rho", "t1", "t2", "t2s", "dw")]
+    arrs = [np.concatenate(cols[k]).astype(np.float32) for k in ("x", "y", "z", "rho", "t1", "t2", "t2s", "dw")]
     n = arrs[0].size
     np.concatenate([np.array([n], dtype=np.float32)] + arrs).tofile(path)
     return n
