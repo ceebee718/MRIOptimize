@@ -18,8 +18,8 @@ function load_phantom(path)
     raw = reinterpret(Float32, read(path))
     n = Int(raw[1])
     col(i) = Float64.(raw[2 + (i - 1) * n : 1 + i * n])
-    x, y, rho, t1, t2, t2s, dw = (col(i) for i in 1:7)
-    return Phantom(name = "proaqmr", x = x, y = y, z = zeros(n), ρ = rho,
+    x, y, z, rho, t1, t2, t2s, dw = (col(i) for i in 1:8)
+    return Phantom(name = "proaqmr", x = x, y = y, z = z, ρ = rho,
                    T1 = t1, T2 = t2, T2s = t2s, Δw = dw)
 end
 
